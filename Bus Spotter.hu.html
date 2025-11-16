@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Magyar busz fotós játék</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#0f1724;--accent:#ffd166;--text:#e6eef8}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui; background:#0b1220;color:var(--text)}
+    .app{max-width:1100px;margin:18px auto;padding:18px;}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+    h1{font-size:20px;margin:0}
+    button{background:var(--accent);border:none;padding:10px 14px;border-radius:14px;font-weight:700;cursor:pointer}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.1);color:var(--text)}
+    .panel{background:#111827;padding:12px;border-radius:12px}
+    .game-area{position:relative;height:460px;overflow:hidden;border-radius:12px;background:#0f1724;border:1px solid rgba(255,255,255,0.05)}
+    @media(max-width:600px){.game-area{height:380px}}
+    .road{position:absolute;left:0;right:0;bottom:0;height:140px;background:#1e293b}
+    .lane{position:absolute;left:0;right:0;height:46px;border-top:1px dashed rgba(255,255,255,0.06)}
+    .lane.l1{bottom:88px}
+    .lane.l2{bottom:42px}
+    .hud{display:flex;gap:10px;flex-wrap:wrap}
+    .stat{padding:10px 14px;border-radius:10px;background:#1e293b;min-width:95px;text-align:center}
+
+    /* BUS */
+    .bus{position:absolute;height:64px;min-width:150px;padding:8px;border-radius:12px;display:flex;align-items:center;gap:10px;background:#243045;cursor:pointer;user-select:none;box-shadow:0 6px 16px rgba(0,0,0,0.4)}
+    .bus img{width:54px;height:54px;border-radius:6px;object-fit:cover}
+
+    .badge{position:absolute;top:6px;right:10px;background:#0007;padding:2px 6px;border-radius:6px;font-size:11px}
+
+    /* FLASH */
+    .flash{position:absolute;inset:0;background:white;opacity:0;pointer-events:none}
+
+    /* +POINT POP */
+    .pop{position:absolute;font-weight:800;padding:6px 10px;border-radius:999px;background:var(--accent);color:#111;transform:translateY(0);opacity:0;transition:transform .6s,opacity .6s}
+
+    /* MOBILE UI EXTRA */
+    @media(max-width:600px){button{padding:8px 10px;font-size:14px}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Magyar busz fotós játék</h1>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button id="startBtn">START</button>
+        <button id="pauseBtn" class="secondary">PAUSE</button>
+        <button id="resetBtn" class="secondary">RESET</button>
+      </div>
+    </header>
+
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div class="hud">
+          <div class="stat"><div> Pontok </div><div id="score" style="font-size:22px;font-weight:800">0</div></div>
+          <div class="stat"><div> Idő </div><div id="timeLeft" style="font-size:22px;font-weight:800">60</div></div>
+          <div class="stat"><div> Fotók </div><div id="shots" style="font-size:22px;font-weight:800">0</div></div>
+        </div>
+        <div>
+          <div>Legjobb: <span id="best">0</span></div>
+          <div>Nehézség: <select id="difficulty"><option value="1">Könnyű</option><option value="1.5">Normál</option><option value="2">Nehéz</option></select></div>
+        </div>
+      </div>
+
+      <div class="game-area" id="gameArea">
+        <div class="flash" id="flash"></div>
+        <div class="road"></div>
+        <div class="lane l1"></div>
+        <div class="lane l2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TEMPLATE WITH IMAGE -->
+  <template id="busTpl">
+    <div class="bus">
+      <img class="bus-img" src="" alt="busz">
+      <div>
+        <div class="brand" style="font-weight:700"></div>
+        <div style="font-size:12px;opacity:.9"></div>
+      </div>
+      <div class="badge">+0</div>
+    </div>
+  </template>
+
+  <script>
+    // HANG EFFEKT (base64 WAV)
+    const shutterSound = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=");
+
+    const IMAGES = {
+      BKK: "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/BKK_bus.jpg/320px-BKK_bus.jpg",
+      VOLAN: "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Volanbusz.jpg/320px-Volanbusz.jpg",
+      IKARUS: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Ikarus_bus.jpg/320px-Ikarus_bus.jpg",
+      RETRO: "https://upload.wikimedia.org/wikipedia/commons/thumb/9/99/Ikarus_180_ret_.jpg/320px-Ikarus_180_ret_.jpg"
+    };
+
+    const gameArea = document.getElementById('gameArea');
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const scoreEl = document.getElementById('score');
+    const timeEl = document.getElementById('timeLeft');
+    const shotsEl = document.getElementById('shots');
+    const bestEl = document.getElementById('best');
+    const difficultySelect = document.getElementById('difficulty');
+    const template = document.getElementById('busTpl');
+    const flash = document.getElementById('flash');
+
+    let score = 0, shots = 0, timeLeft = 60;
+    let running = false, spawnTimer = null, gameTimer = null;
+    let activeBuses = new Set();
+    let best = Number(localStorage.getItem('busgame_best')||0);
+    bestEl.textContent = best;
+
+    const BUS_TYPES = [
+      {id:'BKK', label:'BKK', weight:60, points:10},
+      {id:'VOLAN', label:'Volánbusz', weight:30, points:25},
+      {id:'IKARUS', label:'Ikarus', weight:8, points:80},
+      {id:'RETRO', label:'Retro járat', weight:2, points:180}
+    ];
+
+    function weightedChoice(list){
+      const total = list.reduce((s,i)=>s+i.weight,0);
+      let r = Math.random()*total;
+      for(const item of list){ if(r < item.weight) return item; r -= item.weight; }
+      return list[0];
+    }
+
+    function spawnBus(){
+      if(!running) return;
+      const type = weightedChoice(BUS_TYPES);
+      const node = template.content.firstElementChild.cloneNode(true);
+      node.dataset.type = type.id;
+      node.querySelector('.brand').textContent = type.label;
+      node.querySelector('.badge').textContent = '+'+type.points;
+      node.querySelector('.bus-img').src = IMAGES[type.id];
+
+      node.style.top = (50 + Math.random()*280) + 'px';
+      node.style.right = '-180px';
+
+      const difficulty = parseFloat(difficultySelect.value) || 1;
+      const speed = (0.9 + Math.random()*0.7) * difficulty * (1 + (100-type.weight)/100);
+      node.dataset.speed = speed;
+
+      gameArea.appendChild(node);
+      activeBuses.add(node);
+
+      node.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        takePhoto(node, type);
+      });
+
+      function animate(){
+        if(!running) return;
+        const r = parseFloat(node.style.right);
+        const newR = r + speed*16;
+        node.style.right = newR + 'px';
+
+        if(newR > gameArea.clientWidth + 250){ activeBuses.delete(node); node.remove(); }
+        else requestAnimationFrame(animate);
+      }
+      requestAnimationFrame(animate);
+
+      const nextIn = Math.max(300, (4000 - score/3) / difficulty);
+      spawnTimer = setTimeout(spawnBus, nextIn);
+    }
+
+    function takePhoto(node, type){
+      if(node.dataset.taken) return;
+      node.dataset.taken = '1';
+
+      shots++; shotsEl.textContent = shots;
+      score += type.points; scoreEl.textContent = score;
+
+      shutterSound.currentTime = 0; shutterSound.play();
+
+      flash.style.opacity = 0.8;
+      setTimeout(()=> flash.style.opacity=0, 120);
+
+      const rect = node.getBoundingClientRect();
+      const pr = gameArea.getBoundingClientRect();
+      const pop = document.createElement('div');
+      pop.className = 'pop';
+      pop.textContent = '+'+type.points;
+      pop.style.left = (rect.left - pr.left + rect.width/2)+'px';
+      pop.style.top = (rect.top - pr.top)+'px';
+      gameArea.appendChild(pop);
+
+      requestAnimationFrame(()=>{ pop.style.opacity=1; pop.style.transform='translateY(-40px)' });
+      setTimeout(()=> pop.remove(), 1200);
+
+      node.style.opacity = 0.4;
+      setTimeout(()=>{ activeBuses.delete(node); node.remove(); }, 600);
+
+      if(score > best){ best = score; bestEl.textContent = best; }
+    }
+
+    function startGame(){
+      if(running) return;
+      running = true;
+      score = 0; shots = 0; timeLeft = 60;
+      scoreEl.textContent = 0; shotsEl.textContent = 0; timeEl.textContent = 60;
+      spawnBus();
+      clearInterval(gameTimer);
+      gameTimer = setInterval(()=>{
+        if(!running) return;
+        timeLeft--; timeEl.textContent = timeLeft;
+        if(timeLeft<=0) endGame();
+      },1000);
+    }
+
+    function pauseGame(){ running = !running; if(running) spawnBus(); else clearTimeout(spawnTimer); }
+
+    function resetGame(){
+      running = false; clearTimeout(spawnTimer); clearInterval(gameTimer);
+      activeBuses.forEach(n=>n.remove()); activeBuses.clear();
+      scoreEl.textContent = 0; shotsEl.textContent=0; timeEl.textContent=60;
+    }
+
+    function endGame(){
+      running = false;
+      clearTimeout(spawnTimer); clearInterval(gameTimer);
+      if(score > Number(localStorage.getItem('busgame_best')||0)) localStorage.setItem('busgame_best', score);
+      bestEl.textContent = localStorage.getItem('busgame_best');
+      alert('Vége! Pontszám: '+score);
+    }
+
+    startBtn.onclick=startGame;
+    pauseBtn.onclick=pauseGame;
+    resetBtn.onclick=resetGame;
+  </script>
+</body>
+</html>
